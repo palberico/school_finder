@@ -1,0 +1,34 @@
+[
+  {
+    "universityName": "Tech State University",
+    "state": "California",
+    "contactName": "Alice Johnson",
+    "title": "Director of Admissions",
+    "phone": "555-0101",
+    "email": "alice@techstate.edu"
+  },
+  {
+    "University": "Modern Arts College",
+    "State": "New York",
+    "Name": "Bob Smith",
+    "Title": "Dean of Students",
+    "Phone": "555-0102",
+    "emailAddress": "bsmith@mac.edu"
+  },
+  {
+    "university_name": "Future Tech Institute",
+    "state": "California",
+    "contact_name": "Carol White",
+    "job_title": "Registrar",
+    "phoneNumber": "555-0103",
+    "email": "carol@futuretech.edu"
+  },
+  {
+    "universityName": "Ocean Side University",
+    "state": "Florida",
+    "contactName": "David Brown",
+    "title": "Head of IT",
+    "phone": "555-0104",
+    "email": "dbrown@osu.edu"
+  }
+]
