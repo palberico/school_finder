@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { db } from '../firebase';
-import { doc, writeBatch } from 'firebase/firestore';
+import { doc, writeBatch, collection, query, where, getDocs } from 'firebase/firestore';
 
 const STATES = [
     { code: 'AL', name: 'Alabama' }, { code: 'AK', name: 'Alaska' }, { code: 'AZ', name: 'Arizona' },
@@ -26,6 +26,7 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
     const [selectedState, setSelectedState] = useState('');
     const [schoolType, setSchoolType] = useState('all'); // all, public, private
     const [loading, setLoading] = useState(false);
+    const [loadingText, setLoadingText] = useState('Searching...');
     const [schools, setSchools] = useState([]);
     const [hasSearched, setHasSearched] = useState(false);
 
@@ -33,6 +34,9 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
     const [selectedSchoolIds, setSelectedSchoolIds] = useState(new Set());
     const [isActionsOpen, setIsActionsOpen] = useState(false);
     const actionsRef = useRef(null);
+
+    // Sorting State
+    const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
 
     useEffect(() => {
         const handleClickOutside = (event) => {
@@ -81,28 +85,115 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
             });
 
             // Ownership: 1=Public, 2=Private Nonprofit, 3=Private For-Profit
-            if (schoolType === 'public') {
-                params.append('school.ownership', '1');
-            } else if (schoolType === 'private') {
-                params.append('school.ownership', '2,3');
+            if (schoolType === 'database') {
+                // Database Search
+                const schoolsRef = collection(db, 'schools');
+                const q = query(schoolsRef, where('state', '==', selectedState));
+                const querySnapshot = await getDocs(q);
+
+                const dbResults = querySnapshot.docs.map(doc => {
+                    const data = doc.data();
+                    return {
+                        id: doc.id,
+                        'school.name': data.name,
+                        'school.city': data.city,
+                        'school.zip': data.zip,
+                        'school.school_url': data.website,
+                        'school.ownership': data.ownership
+                    };
+                });
+
+                setSchools(dbResults);
+                setLoading(false);
+                return; // Exit early as we don't need the API call
             }
 
-            const response = await fetch(`${baseUrl}?${params.toString()}`);
+            setLoadingText('Searching...');
 
-            if (!response.ok) {
-                throw new Error('Failed to fetch data');
+            let allSchools = [];
+            let page = 0;
+            let keepFetching = true;
+
+            while (keepFetching) {
+                // Update loading text to show progress if we have multiple pages
+                if (page > 0) {
+                    setLoadingText(`Loading... (Fetched ${allSchools.length} schools)`);
+                }
+
+                const params = new URLSearchParams({
+                    api_key: apiKey,
+                    'school.state': selectedState,
+                    'fields': 'id,school.name,school.city,school.zip,school.school_url,school.ownership',
+                    'per_page': 100,
+                    'page': page
+                });
+
+                if (schoolType === 'public') {
+                    params.append('school.ownership', '1');
+                } else if (schoolType === 'private') {
+                    params.append('school.ownership', '2,3');
+                }
+
+                const response = await fetch(`${baseUrl}?${params.toString()}`);
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch data');
+                }
+
+                const data = await response.json();
+                const results = data.results || [];
+
+                allSchools = [...allSchools, ...results];
+
+                // If we got fewer than 100 results, we've reached the end
+                if (results.length < 100) {
+                    keepFetching = false;
+                } else {
+                    page++;
+                }
             }
 
-            const data = await response.json();
-            setSchools(data.results || []);
+            setSchools(allSchools);
 
         } catch (error) {
             console.error("Search Error:", error);
             showAlert("Failed to load schools. Please check your API key.", "error");
         } finally {
             setLoading(false);
+            setLoadingText('Searching...');
         }
     };
+
+    const handleSort = (key) => {
+        let direction = 'asc';
+        if (sortConfig.key === key && sortConfig.direction === 'asc') {
+            direction = 'desc';
+        }
+        setSortConfig({ key, direction });
+    };
+
+    const sortedSchools = React.useMemo(() => {
+        let sortableItems = [...schools];
+        if (sortConfig.key !== null) {
+            sortableItems.sort((a, b) => {
+                let aValue = a[sortConfig.key] || '';
+                let bValue = b[sortConfig.key] || '';
+
+                // Case insensitive sort
+                if (typeof aValue === 'string') aValue = aValue.toLowerCase();
+                if (typeof bValue === 'string') bValue = bValue.toLowerCase();
+
+                if (aValue < bValue) {
+                    return sortConfig.direction === 'asc' ? -1 : 1;
+                }
+                if (aValue > bValue) {
+                    return sortConfig.direction === 'asc' ? 1 : -1;
+                }
+                return 0;
+            });
+        }
+        return sortableItems;
+    }, [schools, sortConfig]);
 
     // Collapsible Table State
     const [isTableOpen, setIsTableOpen] = useState(true);
@@ -242,6 +333,8 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
                         <option value="all">All Schools</option>
                         <option value="public">Public Only</option>
                         <option value="private">Private Only</option>
+                        <option disabled>──────────</option>
+                        <option value="database">Database</option>
                     </select>
 
                     <button
@@ -249,7 +342,7 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
                         onClick={handleSearch}
                         disabled={loading}
                     >
-                        {loading ? 'Searching...' : (
+                        {loading ? loadingText : (
                             <>
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                                 Search
@@ -263,7 +356,7 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
                 <div className="schools-results-card">
                     <div className="results-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <h3 className="results-count">
-                            {loading ? 'Searching...' : `${schools.length} Schools Found`}
+                            {loading ? loadingText : `${schools.length} Schools Found`}
                         </h3>
 
                         {/* Actions Dropdown */}
@@ -320,7 +413,26 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
                                                 style={{ width: '1.25rem', height: '1.25rem' }}
                                             />
                                         </th>
-                                        <th style={{ width: '30%' }}>School Name</th>
+                                        <th
+                                            style={{ width: '30%', cursor: 'pointer', userSelect: 'none' }}
+                                            onClick={() => handleSort('school.name')}
+                                            className="hover:bg-gray-50"
+                                        >
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                School Name
+                                                <div style={{ display: 'flex', flexDirection: 'column', height: '14px', justifyContent: 'center' }}>
+                                                    {sortConfig.key === 'school.name' ? (
+                                                        sortConfig.direction === 'asc' ? (
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>
+                                                        ) : (
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                                                        )
+                                                    ) : (
+                                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ccc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 15l5 5 5-5"></path><path d="M7 9l5-5 5 5"></path></svg>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </th>
                                         <th style={{ width: '40%' }}>Address</th>
                                         <th
                                             onClick={() => setIsTableOpen(!isTableOpen)}
@@ -356,7 +468,7 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
                                 </thead>
                                 {isTableOpen && (
                                     <tbody>
-                                        {schools.map((school) => {
+                                        {sortedSchools.map((school) => {
                                             let url = school['school.school_url'];
                                             if (url && !url.startsWith('http')) {
                                                 url = `https://${url}`;
