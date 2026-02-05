@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { db } from '../firebase';
-import { doc, writeBatch, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, writeBatch, collection, query, where, getDocs, getDoc, setDoc } from 'firebase/firestore';
 
 const STATES = [
     { code: 'AL', name: 'Alabama' }, { code: 'AK', name: 'Alaska' }, { code: 'AZ', name: 'Arizona' },
@@ -22,6 +22,46 @@ const STATES = [
     { code: 'WV', name: 'West Virginia' }, { code: 'WI', name: 'Wisconsin' }, { code: 'WY', name: 'Wyoming' }
 ];
 
+const PROMPT_TEMPLATE = `Task: Extract executive-level finance and IT contacts for colleges in {state}, focusing ONLY on these institutions:
+
+{schools_list}
+
+You are free to search the web but prioritize official sites.
+
+If you can't find contact information (email/phone number) include the information that you do have.
+
+Targets (include acting/interim):
+Finance: CFO, Chief Business Officer, VP/AVP Finance, VP Finance & Administration, Treasurer, Controller, Director/Head of Finance, Budget Director.
+IT: CIO, VP IT, Director/Head of IT, Chief Information Security Officer (CISO).
+
+Source rules:
+- Use official institutional websites only (school site, system site, official directories). Prefer .edu domains.
+- If 2025-dated pages exist, prefer those. Otherwise use most recent official page.
+- Do NOT guess emails. Only output an email if it appears on the page. If no personal email exists, use a listed department email. If neither exists, leave emailAddress empty.
+
+Email structure rule:
+- Set emailStructure only if the page shows at least 2 staff emails that clearly reveal the pattern. Otherwise set emailStructure to "".
+
+Output rules:
+- Return ONLY valid JSON, nothing else.
+- Return a JSON array of objects. No trailing commas. No markdown.
+
+Schema for each record:
+
+[
+  {
+  "name": "",
+  "title": "",
+  "universityName": "",
+  "state": "",
+  "emailAddress": "",
+  "emailStructure": "",
+  "phoneNumber": "",
+  "confidenceScore": 0,
+  "sourceUrl": ""
+  }
+]`;
+
 const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
     const [selectedState, setSelectedState] = useState('');
     const [schoolType, setSchoolType] = useState('all'); // all, public, private
@@ -37,6 +77,28 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
 
     // Sorting State
     const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
+
+    // Prompt Builder State
+    const [generatedPrompt, setGeneratedPrompt] = useState(null);
+    const [promptTemplate, setPromptTemplate] = useState(PROMPT_TEMPLATE);
+    const [isEditingTemplate, setIsEditingTemplate] = useState(false);
+    const [loadingTemplate, setLoadingTemplate] = useState(false);
+
+    // Fetch template on mount
+    useEffect(() => {
+        const fetchTemplate = async () => {
+            try {
+                const docRef = doc(db, 'settings', 'global');
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists() && docSnap.data().promptTemplate) {
+                    setPromptTemplate(docSnap.data().promptTemplate);
+                }
+            } catch (error) {
+                console.error("Error fetching template:", error);
+            }
+        };
+        fetchTemplate();
+    }, []);
 
     useEffect(() => {
         const handleClickOutside = (event) => {
@@ -221,6 +283,28 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
     };
 
     // Actions
+    const saveSchoolsToDb = async (schoolsToSave) => {
+        const batch = writeBatch(db);
+        schoolsToSave.forEach(school => {
+            const docRef = doc(db, 'schools', String(school.id));
+            let url = school['school.school_url'];
+            if (url && !url.startsWith('http')) {
+                url = `https://${url}`;
+            }
+
+            batch.set(docRef, {
+                name: school['school.name'],
+                city: school['school.city'],
+                zip: school['school.zip'],
+                state: selectedState,
+                website: url || '',
+                ownership: school['school.ownership'],
+                savedAt: new Date().toISOString()
+            }, { merge: true });
+        });
+        await batch.commit();
+    };
+
     const handleSaveSchools = async () => {
         if (selectedSchoolIds.size === 0) return;
 
@@ -229,32 +313,7 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
         setIsActionsOpen(false);
 
         try {
-            const batch = writeBatch(db);
-
-            selectedSchools.forEach(school => {
-                // Create a new document in 'schools' collection
-                // We use setDoc with merge or just doc() for a new ID. 
-                // Let's use the API ID as the doc ID to prevent duplicates easily? 
-                // data.gov IDs are unique integers. Let's use stringified version.
-                const docRef = doc(db, 'schools', String(school.id));
-
-                let url = school['school.school_url'];
-                if (url && !url.startsWith('http')) {
-                    url = `https://${url}`;
-                }
-
-                batch.set(docRef, {
-                    name: school['school.name'],
-                    city: school['school.city'],
-                    zip: school['school.zip'],
-                    state: selectedState,
-                    website: url || '',
-                    ownership: school['school.ownership'],
-                    savedAt: new Date().toISOString()
-                }, { merge: true });
-            });
-
-            await batch.commit();
+            await saveSchoolsToDb(selectedSchools);
             showAlert(`Successfully saved ${selectedSchools.length} schools to database!`, 'success');
             setSelectedSchoolIds(new Set());
 
@@ -266,9 +325,80 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
         }
     };
 
-    const handleCreatePrompt = () => {
-        showAlert("Create Prompt feature is coming soon!", "info");
+    const handleCreatePrompt = async () => {
+        if (selectedSchoolIds.size === 0) {
+            showAlert("Please select search results to generate a prompt.", "info");
+            return;
+        }
+
+        const selectedSchools = schools.filter(s => selectedSchoolIds.has(s.id));
+        setLoading(true);
         setIsActionsOpen(false);
+
+        try {
+            // 1. Save schools first
+            await saveSchoolsToDb(selectedSchools);
+            showAlert(`Saved ${selectedSchools.length} schools and generated prompt!`, 'success');
+
+            // 2. Generate Prompt using State
+            // Note: We use the *current* state promptTemplate, not necessarily the one in DB unless refreshed.
+            // But we fetched it on mount.
+            generateAndShowPrompt(selectedSchools);
+
+        } catch (error) {
+            console.error("Error creating prompt:", error);
+            showAlert("Failed to create prompt.", "error");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const generateAndShowPrompt = (schoolsListObjects) => {
+        const stateName = STATES.find(s => s.code === selectedState)?.name || selectedState;
+
+        // Format: Name    Website
+        const schoolsListString = schoolsListObjects.map(s => {
+            let url = s['school.school_url'] || '';
+            return `${s['school.name'].padEnd(40)} ${url}`;
+        }).join('\n');
+
+        const prompt = promptTemplate
+            .replace('{state}', stateName)
+            .replace('{schools_list}', schoolsListString)
+            .replace('{name}', '')
+            .replace('{website}', '');
+
+        setGeneratedPrompt(prompt);
+    };
+
+    const handleSaveTemplate = async () => {
+        setLoadingTemplate(true);
+        try {
+            await setDoc(doc(db, 'settings', 'global'), {
+                promptTemplate: promptTemplate
+            }, { merge: true });
+
+            setIsEditingTemplate(false);
+            showAlert("Template saved successfully!", "success");
+
+            // Regenerate the preview with the new template
+            const selectedSchools = schools.filter(s => selectedSchoolIds.has(s.id));
+            if (selectedSchools.length > 0) {
+                generateAndShowPrompt(selectedSchools);
+            }
+
+        } catch (error) {
+            console.error("Error saving template:", error);
+            showAlert("Failed to save template.", "error");
+        } finally {
+            setLoadingTemplate(false);
+        }
+    };
+
+    const copyPromptToClipboard = () => {
+        if (!generatedPrompt) return;
+        navigator.clipboard.writeText(generatedPrompt);
+        showAlert("Prompt copied to clipboard!", "success");
     };
 
     const handleExportCSV = () => {
@@ -520,6 +650,115 @@ const SchoolsSearch = ({ showAlert, savedContacts = [] }) => {
                     {!loading && hasSearched && schools.length === 0 && (
                         <div className="empty-state">No schools found matching your criteria.</div>
                     )}
+                </div>
+            )}
+
+            {/* Prompt Builder Modal/Card */}
+            {generatedPrompt && (
+                <div className="prompt-builder-overlay" style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    zIndex: 1000
+                }}>
+                    <div className="prompt-builder-card" style={{
+                        backgroundColor: 'white',
+                        padding: '2rem',
+                        borderRadius: '12px',
+                        width: '80%',
+                        maxWidth: '800px',
+                        maxHeight: '90vh',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '1rem',
+                        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+                        margin: 'auto', // Fix centering
+                        boxSizing: 'border-box'
+                    }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                                <h3 style={{ fontSize: '1.25rem', fontWeight: 600 }}>
+                                    {isEditingTemplate ? 'Edit Prompt Template' : 'Prompt Builder'}
+                                </h3>
+                                <button
+                                    onClick={() => setIsEditingTemplate(!isEditingTemplate)}
+                                    className="btn btn-sm"
+                                    style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem' }}
+                                >
+                                    {isEditingTemplate ? 'Cancel Edit' : 'Edit Template'}
+                                </button>
+                            </div>
+                            <button
+                                onClick={() => setGeneratedPrompt(null)}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0.5rem' }}
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                            </button>
+                        </div>
+
+                        <p className="text-muted" style={{ fontSize: '0.9rem' }}>
+                            {isEditingTemplate
+                                ? 'Edit the global template. Use {state} and {schools_list} as placeholders.'
+                                : 'Edit your prompt if needed for this batch, then copy it to clipboard.'}
+                        </p>
+
+                        <textarea
+                            value={isEditingTemplate ? promptTemplate : generatedPrompt}
+                            onChange={(e) => {
+                                if (isEditingTemplate) {
+                                    setPromptTemplate(e.target.value);
+                                } else {
+                                    setGeneratedPrompt(e.target.value);
+                                }
+                            }}
+                            style={{
+                                width: '100%',
+                                height: '400px',
+                                padding: '1rem',
+                                borderRadius: '8px',
+                                border: '1px solid #e2e8f0',
+                                fontFamily: 'monospace',
+                                fontSize: '0.9rem',
+                                lineHeight: '1.5',
+                                resize: 'vertical'
+                            }}
+                        />
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
+                            <button
+                                className="btn"
+                                onClick={() => setGeneratedPrompt(null)}
+                                style={{ backgroundColor: '#f1f5f9', color: '#475569' }}
+                            >
+                                Close
+                            </button>
+
+                            {isEditingTemplate ? (
+                                <button
+                                    className="btn btn-primary"
+                                    onClick={handleSaveTemplate}
+                                    disabled={loadingTemplate}
+                                >
+                                    {loadingTemplate ? 'Saving...' : 'Save Template'}
+                                </button>
+                            ) : (
+                                <button
+                                    className="btn btn-primary"
+                                    onClick={copyPromptToClipboard}
+                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                                    Copy to Clipboard
+                                </button>
+                            )}
+                        </div>
+                    </div>
                 </div>
             )}
         </div>
