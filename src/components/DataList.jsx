@@ -4,10 +4,10 @@ import { deleteDoc, doc, writeBatch } from 'firebase/firestore';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
-const DataList = ({ data, loading, onRefresh, showAlert }) => {
+const DataList = ({ data, loading, onRefresh, showAlert, showEmailOnly, setShowEmailOnly }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [showContactInfoOnly, setShowContactInfoOnly] = useState(false);
-    const [showEmailOnly, setShowEmailOnly] = useState(false);
+    // showEmailOnly is now a prop
 
     // Selection State
     const [selectedIds, setSelectedIds] = useState(new Set());

@@ -13,7 +13,15 @@ function App() {
   const [alert, setAlert] = useState(null); // { message, type, onConfirm? }
   const [currentView, setCurrentView] = useState('dashboard'); // 'dashboard' | 'schools'
 
+  const [showEmailOnly, setShowEmailOnly] = useState(false);
+
+  // Filter Logic for Stats
+  const totalContactsCount = showEmailOnly
+    ? data.filter(item => item.email && item.email.trim()).length
+    : data.filter(item => (item.phone && item.phone.trim()) || (item.email && item.email.trim())).length;
+
   // Custom Alert Helper
+
   const showAlert = (message, type = 'info', onConfirm = null) => {
     setAlert({ message, type, onConfirm });
   };
@@ -100,7 +108,8 @@ function App() {
             <div className="dashboard-grid">
               <StatsCard
                 totalRecords={data.length}
-                totalContacts={data.filter(item => (item.phone && item.phone.trim()) || (item.email && item.email.trim())).length}
+                totalContacts={totalContactsCount}
+                label={showEmailOnly ? "Total Emails" : "Total Contacts"}
               />
               <Upload onUploadSuccess={() => { }} showAlert={showAlert} />
             </div>
@@ -111,6 +120,8 @@ function App() {
               loading={loading}
               onRefresh={() => { }}
               showAlert={showAlert}
+              showEmailOnly={showEmailOnly}
+              setShowEmailOnly={setShowEmailOnly}
             />
           </>
         ) : (

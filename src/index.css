@@ -570,6 +570,8 @@ body {
 .stats-info {
   display: flex;
   flex-direction: column;
+  min-width: 120px;
+  /* Prevent shift between "Total Contacts" and "Total Emails" */
 }
 
 .stats-label {

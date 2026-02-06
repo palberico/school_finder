@@ -1,6 +1,6 @@
 import React from 'react';
 
-const StatsCard = ({ totalRecords, totalContacts }) => {
+const StatsCard = ({ totalRecords, totalContacts, label = "Total Contacts" }) => {
     return (
         <div className="dashboard-card stats-card-extended">
             {/* Total Records Section */}
@@ -30,7 +30,7 @@ const StatsCard = ({ totalRecords, totalContacts }) => {
                     </svg>
                 </div>
                 <div className="stats-info">
-                    <span className="stats-label">Total Contacts</span>
+                    <span className="stats-label">{label}</span>
                     <div className="stats-value">{totalContacts}</div>
                 </div>
             </div>
